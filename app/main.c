@@ -641,6 +641,12 @@ static void MAIN_Key_UP_DOWN(bool bKeyPressed, bool bKeyHeld, int8_t Direction)
 				gTxVfo->freq_config_RX.Frequency = frequency;
 				BK4819_SetFrequency(frequency);
 				BK4819_RX_TurnOn();
+#ifdef ENABLE_DIGITAL_MODULATION
+				if (gTxVfo->Modulation == MODULATION_DIGITAL) {
+					// MIC ADC must remain enabled during RX to maintain proper DC bias.
+					BK4819_SetRegValue(micAdcEnableRegSpec, 1);
+				}
+#endif
 				gRequestSaveChannel = 1;
 				return;
 			}

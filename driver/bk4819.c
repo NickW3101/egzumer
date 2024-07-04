@@ -40,6 +40,8 @@ static const uint8_t DTMF_TONE2_GAIN = 93;
 
 static uint16_t gBK4819_GpioOutState;
 
+static uint16_t gBK4819_DefaultDeviation;
+
 bool gRxIdleMode;
 
 __inline uint16_t scale_freq(const uint16_t freq)
@@ -53,6 +55,8 @@ void BK4819_Init(void)
 	GPIO_SetBit(&GPIOC->DATA, GPIOC_PIN_BK4819_SCN);
 	GPIO_SetBit(&GPIOC->DATA, GPIOC_PIN_BK4819_SCL);
 	GPIO_SetBit(&GPIOC->DATA, GPIOC_PIN_BK4819_SDA);
+
+	gBK4819_DefaultDeviation = BK4819_ReadRegister(BK4819_REG_40);
 
 	BK4819_WriteRegister(BK4819_REG_00, 0x8000);
 	BK4819_WriteRegister(BK4819_REG_00, 0x0000);
@@ -688,12 +692,12 @@ void BK4819_SetFilterBandwidth(const BK4819_FilterBandwidth_t Bandwidth, const b
 	if (digitalFilters) {
 		// NOTE: AFTxLPF2 is bypassed in BK4819_PrepareDigitalTransmit()
 		// Disable DC filter (RX & TX).
-		BK4819_WriteRegister(BK4819_REG_7E, BK4819_ReadRegister(BK4819_REG_7E) & 0xFFC0);
+		BK4819_WriteRegister(BK4819_REG_7E, (BK4819_ReadRegister(BK4819_REG_7E) & 0xFFC0));
 		// Disable FM sub-audio filters & emphasis
 		BK4819_WriteRegister(BK4819_REG_2B, (BK4819_ReadRegister(BK4819_REG_2B) & 0xF8F8) | 0x707);
 	} else {
 		// Enable DC filter (RX & TX).
-		BK4819_WriteRegister(BK4819_REG_7E, BK4819_ReadRegister(BK4819_REG_7E) | 0b101110);
+		BK4819_WriteRegister(BK4819_REG_7E, (BK4819_ReadRegister(BK4819_REG_7E) & 0xFFC0) | 0b101110);
 		// Enable FM sub-audio filters & emphasis
 		BK4819_WriteRegister(BK4819_REG_2B, BK4819_ReadRegister(BK4819_REG_2B) & 0xF8F8);
 	}
@@ -1169,6 +1173,8 @@ void BK4819_ExitBypass(void)
 	BK4819_SetRegValue(alcDisableRegSpec, 0);
 	// Enable MIC AGC
 	BK4819_SetRegValue(micAgcDisableRegSpec, 0);
+	// Set default deviation
+	BK4819_WriteRegister(BK4819_REG_40, gBK4819_DefaultDeviation);
 #endif
 }
 
@@ -1177,7 +1183,7 @@ void BK4819_PrepareDigitalTransmit(const BK4819_FilterBandwidth_t Bandwidth)
 {
 	// Mute output audio and bypass all AF TX filters.
 	BK4819_WriteRegister(BK4819_REG_47, (2u << 12) | (BK4819_AF_MUTE << 8) | (1u << 6) | 1);
-	// Disable Mic AGC and TX DC filter.
+	// Disable TX DC filter.
 	BK4819_WriteRegister(BK4819_REG_7E, (BK4819_ReadRegister(BK4819_REG_7E) & 0xFFC7) | 0x8000);
 	// Disable Voice FM AF TX filters
 	BK4819_WriteRegister(BK4819_REG_2B, (BK4819_ReadRegister(BK4819_REG_2B) & 0xFFF8) | 0x7);
@@ -1194,11 +1200,11 @@ void BK4819_PrepareDigitalTransmit(const BK4819_FilterBandwidth_t Bandwidth)
 		default:
 		case BK4819_FILTER_BW_NARROW:
 		case BK4819_FILTER_BW_DIGITAL_NARROW:
-			BK4819_WriteRegister(BK4819_REG_40, 0x14D6);
+			BK4819_WriteRegister(BK4819_REG_40, (gBK4819_DefaultDeviation & 0xE000) | 0x14D6);
 			break;
 		case BK4819_FILTER_BW_WIDE:
 		case BK4819_FILTER_BW_DIGITAL_WIDE:
-			BK4819_WriteRegister(BK4819_REG_40, 0x1383);
+			BK4819_WriteRegister(BK4819_REG_40, (gBK4819_DefaultDeviation & 0xE000) | 0x1383);
 			break;
 	}
 

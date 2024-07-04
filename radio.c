@@ -726,10 +726,14 @@ void RADIO_SetupRegisters(bool switchToForeground)
 
 #ifdef ENABLE_DIGITAL_MODULATION
 	if (gRxVfo->Modulation != MODULATION_DIGITAL) {
+		BK4819_SetRegValue(micAdcEnableRegSpec, 0);
 #endif
-	BK4819_EnableDTMF();
-	InterruptMask |= BK4819_REG_3F_DTMF_5TONE_FOUND;
+		BK4819_EnableDTMF();
+		InterruptMask |= BK4819_REG_3F_DTMF_5TONE_FOUND;
 #ifdef ENABLE_DIGITAL_MODULATION
+	} else {
+		// MIC ADC must remain enabled during RX to maintain proper DC bias.
+		BK4819_SetRegValue(micAdcEnableRegSpec, 1);
 	}
 #endif
 
