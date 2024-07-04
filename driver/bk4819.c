@@ -40,6 +40,8 @@ static const uint8_t DTMF_TONE2_GAIN = 93;
 
 static uint16_t gBK4819_GpioOutState;
 
+static uint16_t gBK4819_DefaultDeviation;
+
 bool gRxIdleMode;
 
 __inline uint16_t scale_freq(const uint16_t freq)
@@ -53,6 +55,8 @@ void BK4819_Init(void)
 	GPIO_SetBit(&GPIOC->DATA, GPIOC_PIN_BK4819_SCN);
 	GPIO_SetBit(&GPIOC->DATA, GPIOC_PIN_BK4819_SCL);
 	GPIO_SetBit(&GPIOC->DATA, GPIOC_PIN_BK4819_SDA);
+
+	gBK4819_DefaultDeviation = BK4819_ReadRegister(BK4819_REG_40);
 
 	BK4819_WriteRegister(BK4819_REG_00, 0x8000);
 	BK4819_WriteRegister(BK4819_REG_00, 0x0000);
@@ -609,8 +613,31 @@ void BK4819_SetFilterBandwidth(const BK4819_FilterBandwidth_t Bandwidth, const b
 	// <1:0>   0 ???
 
 	uint16_t val = 0;
+#ifdef ENABLE_DIGITAL_MODULATION
+	bool digitalFilters = false;
+#endif
 	switch (Bandwidth)
 	{
+#ifdef ENABLE_DIGITAL_MODULATION
+		case BK4819_FILTER_BW_DIGITAL_WIDE:
+			val = (4u << 12) |     // RF RX filter bandwidth (7.5kHz)
+				  (3u <<  9) |     // Weak RX signal bandwidth (6kHz)
+				  (6u <<  6) |     // Tx AF Filter bandwidth (4.5kHz, bypassed)
+				  (2u <<  4) |     // 25kHz channel bandwidth
+				  (1u <<  3) |     // ?
+				  (0u <<  2);      // 0 Gain after FM Demodulation
+			digitalFilters = true;
+			break;
+		case BK4819_FILTER_BW_DIGITAL_NARROW:
+			val = (7u << 12) |     // RF RX filter bandwidth (4.5kHz)
+				  (4u <<  9) |     // Weak RX signal bandwidth (3.75kHz)
+				  (0u <<  6) |     // Tx AF Filter bandwidth (3kHz, bypassed)
+				  (0u <<  4) |     // 12.5kHz channel bandwidth
+				  (1u <<  3) |     // ?
+				  (0u <<  2);      // 0 Gain after FM Demodulation
+			digitalFilters = true;
+			break;
+#endif
 		default:
 		case BK4819_FILTER_BW_WIDE:	// 25kHz
 			val = (4u << 12) |     // *3 RF filter bandwidth
@@ -661,6 +688,20 @@ void BK4819_SetFilterBandwidth(const BK4819_FilterBandwidth_t Bandwidth, const b
 	}
 
 	BK4819_WriteRegister(BK4819_REG_43, val);
+#ifdef ENABLE_DIGITAL_MODULATION
+	if (digitalFilters) {
+		// NOTE: AFTxLPF2 is bypassed in BK4819_PrepareDigitalTransmit()
+		// Disable DC filter (RX & TX).
+		BK4819_WriteRegister(BK4819_REG_7E, (BK4819_ReadRegister(BK4819_REG_7E) & 0xFFC0));
+		// Disable FM sub-audio filters & emphasis
+		BK4819_WriteRegister(BK4819_REG_2B, (BK4819_ReadRegister(BK4819_REG_2B) & 0xF8F8) | 0x707);
+	} else {
+		// Enable DC filter (RX & TX).
+		BK4819_WriteRegister(BK4819_REG_7E, (BK4819_ReadRegister(BK4819_REG_7E) & 0xFFC0) | 0b101110);
+		// Enable FM sub-audio filters & emphasis
+		BK4819_WriteRegister(BK4819_REG_2B, BK4819_ReadRegister(BK4819_REG_2B) & 0xF8F8);
+	}
+#endif
 }
 
 void BK4819_SetupPowerAmplifier(const uint8_t bias, const uint32_t frequency)
@@ -744,7 +785,11 @@ void BK4819_SetupSquelch(
 
 		// original (*)
 	(1u << 14) |                  //  1 ???
+#ifdef ENABLE_DIGITAL_MODULATION
+	(0u << 11) |                  // *0  squelch = open  delay .. 0 ~ 7
+#else
 	(5u << 11) |                  // *5  squelch = open  delay .. 0 ~ 7
+#endif
 	(6u <<  9) |                  // *3  squelch = close delay .. 0 ~ 3
 	SquelchOpenGlitchThresh);     //  0 ~ 255
 
@@ -1123,7 +1168,50 @@ void BK4819_ExitBypass(void)
 		| (5u <<  3)       // 5  DC Filter band width for Tx (MIC In)
 
 	);
+#ifdef ENABLE_DIGITAL_MODULATION
+	// Enable ALC
+	BK4819_SetRegValue(alcDisableRegSpec, 0);
+	// Enable MIC AGC
+	BK4819_SetRegValue(micAgcDisableRegSpec, 0);
+	// Set default deviation
+	BK4819_WriteRegister(BK4819_REG_40, gBK4819_DefaultDeviation);
+#endif
 }
+
+#ifdef ENABLE_DIGITAL_MODULATION
+void BK4819_PrepareDigitalTransmit(const BK4819_FilterBandwidth_t Bandwidth)
+{
+	// Mute output audio and bypass all AF TX filters.
+	BK4819_WriteRegister(BK4819_REG_47, (2u << 12) | (BK4819_AF_MUTE << 8) | (1u << 6) | 1);
+	// Disable TX DC filter.
+	BK4819_WriteRegister(BK4819_REG_7E, (BK4819_ReadRegister(BK4819_REG_7E) & 0xFFC7) | 0x8000);
+	// Disable Voice FM AF TX filters
+	BK4819_WriteRegister(BK4819_REG_2B, (BK4819_ReadRegister(BK4819_REG_2B) & 0xFFF8) | 0x7);
+	// Disable ALC
+	BK4819_SetRegValue(alcDisableRegSpec, 1);
+	// Disable MIC AGC
+	BK4819_SetRegValue(micAgcDisableRegSpec, 1);
+	// Set Mic Sensitivity
+	BK4819_WriteRegister(BK4819_REG_7D, 0xE940);
+	// Set Deviation
+	// This should be moved into EEPROM settings.
+	switch (Bandwidth)
+	{
+		default:
+		case BK4819_FILTER_BW_NARROW:
+		case BK4819_FILTER_BW_DIGITAL_NARROW:
+			BK4819_WriteRegister(BK4819_REG_40, (gBK4819_DefaultDeviation & 0xE000) | 0x14D6);
+			break;
+		case BK4819_FILTER_BW_WIDE:
+		case BK4819_FILTER_BW_DIGITAL_WIDE:
+			BK4819_WriteRegister(BK4819_REG_40, (gBK4819_DefaultDeviation & 0xE000) | 0x1383);
+			break;
+	}
+
+	BK4819_ExitTxMute();
+	BK4819_TxOn_Beep();
+}
+#endif
 
 void BK4819_PrepareTransmit(void)
 {
